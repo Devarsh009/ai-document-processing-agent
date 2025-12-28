@@ -1,118 +1,171 @@
-AI Document Processing Pipeline
-This repository contains a production-grade document processing system designed to ingest, classify, and extract structured data from unstructured text documents. The architecture prioritizes resilience and concurrency by decoupling the API layer from the processing logic using an asynchronous task queue.
+Here is a complete, visually engaging, and professional `README.md` file. It includes emojis, clear formatting, and precise technical details. You can copy and paste this directly into your `README.md` file.
 
-System Architecture
-The solution integrates three core frameworks to handle the document lifecycle:
+```markdown
+# 🤖 AI Document Processing Agent
 
-FastAPI (API Layer): Handles HTTP requests and file uploads. It acts as the entry point, immediately offloading processing tasks to the background queue to ensure non-blocking response times.
+> **A production-grade, asynchronous document processing pipeline built with FastAPI, LangGraph, and CrewAI.**
 
-LangGraph (Orchestration): Manages the workflow logic. It treats the processing pipeline as a stateful graph, determining the flow of a document based on classification results and confidence scores.
+This system ingests unstructured documents (Invoices, Contracts, Emails), intelligently classifies them using LLM agents, extracts structured JSON data, and handles edge cases with smart routing logic.
 
-CrewAI (Agentic Logic): Implements specialized AI agents (Classifier and Extractor) powered by Large Language Models to perform cognitive analysis on the document content.
+---
 
-Celery & Redis (Async Execution): Manages the task queue, allowing the system to process multiple documents concurrently without degrading API performance.
+## 🚀 Features
 
-Key Features
-Asynchronous Design: Long-running AI inference tasks are processed in the background, allowing the system to scale under load.
+* [cite_start]**⚡ Asynchronous Architecture**: Powered by **Celery** & **Redis** to decouple API ingestion from heavy AI processing, ensuring high concurrency and non-blocking responses[cite: 55].
+* [cite_start]**🧠 Intelligent Classification**: Uses **CrewAI** agents (Llama 3.1) to analyze document content and determine types (Invoice, Contract, Technical Spec) with confidence scores [cite: 20-22].
+* **🔀 Smart Routing (LangGraph)**:
+    * [cite_start]**High Confidence (>70%)**: Automatically routed to specialized extraction agents [cite: 33-34].
+    * [cite_start]**Low Confidence (<70%)**: Flagged and routed to a "Manual Review" queue, optimizing accuracy and cost[cite: 32].
+* [cite_start]**📊 Structured Extraction**: Enforces strict JSON schemas for all outputs, converting messy text into reliable data[cite: 25].
+* [cite_start]**🛡️ Robust Error Handling**: Gracefully handles empty files, vague content, and JSON parsing errors without crashing[cite: 73].
 
-Intelligent Routing: The workflow includes conditional logic. Documents with high classification confidence are automatically routed for data extraction, while low-confidence documents are flagged and routed to a manual review queue.
+---
 
-Structured Data Extraction: The system enforces strict JSON schemas for outputs, ensuring that unstructured text (like invoices or contracts) is converted into reliable, machine-readable data.
+## 🛠️ Tech Stack
 
-Robust Error Handling: Specific edge cases, such as empty files, vague content, or LLM hallucinations, are caught and handled gracefully to prevent system crashes.
+| Component | Technology | Purpose |
+| :--- | :--- | :--- |
+| **API Layer** | **FastAPI** | [cite_start]High-performance REST API for file uploads[cite: 9]. |
+| **Orchestration** | **LangGraph** | [cite_start]Stateful workflow management and conditional routing[cite: 10]. |
+| **Agents** | **CrewAI** | [cite_start]Agentic logic and LLM interaction (via Groq)[cite: 11]. |
+| **Queue** | **Celery** | Distributed task queue for async background jobs. |
+| **Broker** | **Redis** | Message broker and result backend. |
 
-Prerequisites
-Before running the application, ensure you have the following installed:
+---
 
-Python 3.9+
+## 📋 Prerequisites
 
-Redis Server: This is required for Celery to function as a message broker. It must be running locally on port 6379.
+Before running the system, ensure you have the following installed:
 
-Installation Instructions
-Clone the repository Navigate to the project directory on your local machine.
+* [cite_start]**Python 3.9+** [cite: 107]
+* **Redis Server** (Running locally on default port `6379`)
 
-Set up the environment Create a virtual environment to isolate dependencies.
+---
 
-Bash
+## ⚙️ Installation
 
-# Windows
-python -m venv venv
-.\venv\Scripts\activate
+1.  **Clone the Repository**
+    ```bash
+    git clone [https://github.com/Devarsh009/ai-document-processing-agent.git](https://github.com/Devarsh009/ai-document-processing-agent.git)
+    cd ai-document-processing-agent
+    ```
 
-# Mac/Linux
-python3 -m venv venv
-source venv/bin/activate
-Install dependencies Install the required Python packages specified in the requirements file.
+2.  **Create Virtual Environment**
+    ```bash
+    # Windows
+    python -m venv venv
+    .\venv\Scripts\activate
 
-Bash
+    # Mac/Linux
+    python3 -m venv venv
+    source venv/bin/activate
+    ```
 
-pip install -r requirements.txt
-Configure Environment Variables Create a file named .env in the root directory. Add your Groq API key (or other LLM provider key) here.
+3.  **Install Dependencies**
+    ```bash
+    pip install -r requirements.txt
+    ```
 
-Plaintext
+4.  **Configure Environment**
+    Create a `.env` file in the root directory:
+    ```env
+    GROQ_API_KEY=gsk_your_actual_api_key_here
+    ```
 
-GROQ_API_KEY=your_api_key_here
-How to Run the System
-To run the full pipeline, you will need three separate terminal windows open to handle the different components of the architecture.
+---
 
-Terminal 1: Start Redis Ensure your local Redis instance is active.
+## 🏃‍♂️ How to Run
 
-Bash
+To run the full pipeline, you need **three separate terminal windows**:
 
+### 1️⃣ Start Redis
+Ensure your local Redis server is active.
+```bash
 redis-server
-Terminal 2: Start the Celery Worker This launches the background worker that listens for processing tasks.
 
-Bash
+```
 
-# Windows (The --pool=solo flag is often required for Windows compatibility)
+### 2️⃣ Start Celery Worker
+
+This background worker listens for and executes AI tasks.
+
+```bash
+# Windows (Use --pool=solo)
 python -m celery -A app.workers.celery_app:celery_app worker --loglevel=info --pool=solo
 
 # Mac/Linux
 python -m celery -A app.workers.celery_app:celery_app worker --loglevel=info
-Terminal 3: Start the FastAPI Application This launches the web server to accept incoming requests.
 
-Bash
+```
 
+### 3️⃣ Start FastAPI Server
+
+This launches the REST API at `http://127.0.0.1:8000`.
+
+```bash
 uvicorn app.main:app --reload
-Testing the Pipeline
-Automated Concurrent Testing
-A dedicated test script is included to simulate real-world usage. This script uploads multiple documents of different types (Invoice, Contract, Email) simultaneously to verify the system's concurrency and routing logic.
 
-Ensure you have text files inside the test_samples/ directory.
+```
 
-Run the test script:
+---
 
-Bash
+## 🧪 Testing the System
 
+### Option A: Automated Concurrent Test ⚡
+
+Use the included script to simulate multiple users uploading different documents simultaneously.
+
+1. Ensure sample files exist in the `test_samples/` folder.
+2. Run the script:
+```bash
 python test_script.py
-Observe the Celery Terminal to watch the agents classify and extract data in parallel.
 
-Manual API Testing
-You can also interact with the API directly using the auto-generated Swagger documentation.
+```
 
-Open your web browser and navigate to http://127.0.0.1:8000/docs.
 
-Locate the POST /process endpoint.
+3. **Watch the Magic**: Check your **Celery Terminal** to see agents processing files in parallel!
 
-Upload a text file and execute the request.
+### Option B: Manual API Testing 🖐️
 
-The API will return a unique Task ID, and the processing result will appear in your Celery logs.
+1. Open the interactive Swagger UI: [http://127.0.0.1:8000/docs](https://www.google.com/search?q=http://127.0.0.1:8000/docs)
+2. Use the `POST /process` endpoint.
+3. Upload a `.txt` file.
+4. The API returns a **Task ID**. Check the Celery logs for the JSON result.
 
-Project Structure
-app/: Contains the core application source code.
+---
 
-agents/: Defines the CrewAI agents and their specific roles.
+## 📂 Project Structure
 
-workers/: Configures the Celery application and task definitions.
+```text
+AI_PROJECT/
+├── app/
+│   ├── agents/           # 🤖 CrewAI Agent definitions (Classifier, Extractor)
+│   ├── workers/          # ⚙️ Celery task configuration
+│   ├── workflows/        # 🔀 LangGraph nodes & conditional logic
+│   ├── utils/            # 📝 Logging & helpers
+│   └── main.py           # 🌐 FastAPI entry point
+├── test_samples/         # 📄 Sample documents (Invoice, Contract, Email)
+├── uploads/              # 📂 Temp storage for processing
+├── test_script.py        # 🧪 Concurrent testing tool
+├── requirements.txt      # 📦 Pinned dependencies
+└── README.md             # 📖 Documentation
 
-workflows/: Contains the LangGraph state definitions, nodes, and routing logic.
+```
 
-utils/: Utility modules for logging and helper functions.
+---
 
-main.py: The FastAPI application entry point.
+## 🛡️ Edge Case Handling
 
-test_samples/: A directory containing sample text documents for testing purposes.
+The system is designed to handle real-world messiness:
 
-test_script.py: A Python script for running concurrent load tests against the API.
+* **Vague/Empty Files**: Caught by the Classifier logic and routed to `Manual Review`.
+* **Hallucinations**: Strict prompt engineering enforces JSON-only responses.
+* **JSON Errors**: A dedicated cleaning utility strips Markdown formatting before parsing.
 
-requirements.txt: A list of all project dependencies.
+---
+
+**Author**: Devarsh
+
+```
+
+```
