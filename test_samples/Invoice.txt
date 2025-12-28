@@ -1,0 +1,17 @@
+INVOICE #INV-2024-001
+Date: October 24, 2025
+
+Bill To:
+Tech Corp Solutions
+123 Silicon Valley Blvd
+
+Items:
+1. Cloud Server Hosting (Annual) - $5,000.00
+2. AI Model Fine-tuning - $2,500.00
+
+Subtotal: $7,500.00
+Tax (10%): $750.00
+Total Due: $8,250.00
+
+Payment Terms: Net 30
+Vendor: CloudCompute Inc.

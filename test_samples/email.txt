@@ -1,0 +1,12 @@
+From: Sarah Jenkins
+Sent: Monday, December 12, 2025
+To: Engineering Team
+Subject: Quick update on the server
+
+Hey team,
+
+Just wanted to let you know the dev server might be down for about 10 minutes while I patch the OS. 
+It shouldn't take long. Let me know if you see any weird latency afterwards.
+
+Thanks,
+Sarah

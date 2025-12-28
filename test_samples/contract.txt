@@ -1,0 +1,19 @@
+SOFTWARE LICENSING AGREEMENT
+
+This Agreement is made on this 20th day of November, 2025, between:
+
+Licensor: AlphaSoft Systems ("Provider")
+Licensee: BetaRetail Ltd ("Client")
+
+1. GRANT OF LICENSE
+Provider grants Client a non-exclusive, non-transferable license to use the "AlphaPOS" software.
+
+2. TERM
+This agreement shall be valid for a period of 2 years, commencing on 2025-12-01.
+
+3. FEES
+Client agrees to pay a monthly maintenance fee of $400.
+
+Signatures:
+[Signed by Provider]
+[Signed by Client]
