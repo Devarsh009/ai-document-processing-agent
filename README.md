@@ -9,12 +9,27 @@ This system ingests unstructured documents (Invoices, Contracts, Emails), intell
 ## 🚀 Features
 
 * **⚡ Asynchronous Architecture**: Powered by **Celery** & **Redis** to decouple API ingestion from heavy AI processing, ensuring high concurrency and non-blocking responses.
-* **🧠 Intelligent Classification**: Uses **CrewAI** agents (Llama 3.1) to analyze document content and determine types (Invoice, Contract, Technical Spec) with confidence scores.
+* **🧠 Intelligent "Skeptical Auditor"**: Uses **Chain-of-Thought (CoT)** prompting to distinguish between actual business documents and informal emails *discussing* them.
 * **🔀 Smart Routing (LangGraph)**:
-    * **High Confidence (>70%)**: Automatically routed to specialized extraction agents.
-    * **Low Confidence (<70%)**: Flagged and routed to a "Manual Review" queue, optimizing accuracy and cost.
+    * **High Confidence (≥70%)**: Automatically routed to specialized extraction agents.
+    * **Low Confidence (<70%)**: Flagged and routed to a "Manual Review" queue, optimizing accuracy and ensuring safety.
 * **📊 Structured Extraction**: Enforces strict JSON schemas for all outputs, converting messy text into reliable data.
 * **🛡️ Robust Error Handling**: Gracefully handles empty files, vague content, and JSON parsing errors without crashing.
+
+---
+
+## 🔄 Architecture & Workflow
+
+1.  **Ingestion 📥**: User uploads a file via **FastAPI** (Non-blocking). The task is immediately pushed to **Redis**.
+2.  **Async Processing ⚙️**: A background **Celery Worker** picks up the task from the queue.
+3.  **Smart Classification (The Brain) 🧠**:
+    * The **Classification Agent** analyzes the text using Llama 3.1.
+    * *Logic Check:* It asks, "Is this the document itself, or just an email talking about it?"
+    * Assigns a `Classification` and a `Confidence Score`.
+4.  **Conditional Routing (LangGraph) 🔀**:
+    * ✅ **Score ≥ 70%**: Routes to the specific **Extractor Agent** (e.g., `Invoice Extractor`).
+    * ⚠️ **Score < 70%**: Routes to the **Manual Review** node.
+5.  **Extraction 📝**: Returns structured JSON (Pydantic-validated) containing fields like `Total`, `Vendor`, `Dates`, etc.
 
 ---
 
@@ -135,7 +150,7 @@ AI_PROJECT/
 🛡️ Edge Case Handling
 The system is designed to handle real-world messiness:
 
-Vague/Empty Files: Caught by the Classifier logic and routed to Manual Review.
+Vague/Conversational Files: Caught by the "Skeptical Auditor" classifier logic (low confidence) and routed to Manual Review.
 
 Hallucinations: Strict prompt engineering enforces JSON-only responses.
 
