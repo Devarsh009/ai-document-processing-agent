@@ -79,11 +79,66 @@ To run the full pipeline, you need **three separate terminal windows**:
 Ensure your local Redis server is active.
 ```bash
 redis-server
+2️⃣ Start Celery Worker
+This background worker listens for and executes AI tasks.
+
+Bash
 
 # Windows (Use --pool=solo)
 python -m celery -A app.workers.celery_app:celery_app worker --loglevel=info --pool=solo
 
 # Mac/Linux
 python -m celery -A app.workers.celery_app:celery_app worker --loglevel=info
+3️⃣ Start FastAPI Server
+This launches the REST API at http://127.0.0.1:8000.
+
+Bash
 
 uvicorn app.main:app --reload
+🧪 Testing the System
+Option A: Automated Concurrent Test ⚡
+Use the included script to simulate multiple users uploading different documents simultaneously.
+
+Ensure sample files exist in the test_samples/ folder.
+
+Run the script:
+
+Bash
+
+python test_script.py
+Watch the Magic: Check your Celery Terminal to see agents processing files in parallel!
+
+Option B: Manual API Testing 🖐️
+Open the interactive Swagger UI: http://127.0.0.1:8000/docs
+
+Use the POST /process endpoint.
+
+Upload a .txt file.
+
+The API returns a Task ID. Check the Celery logs for the JSON result.
+
+📂 Project Structure
+Plaintext
+
+AI_PROJECT/
+├── app/
+│   ├── agents/           # 🤖 CrewAI Agent definitions (Classifier, Extractor)
+│   ├── workers/          # ⚙️ Celery task configuration
+│   ├── workflows/        # 🔀 LangGraph nodes & conditional logic
+│   ├── utils/            # 📝 Logging & helpers
+│   └── main.py           # 🌐 FastAPI entry point
+├── test_samples/         # 📄 Sample documents (Invoice, Contract, Email)
+├── uploads/              # 📂 Temp storage for processing
+├── test_script.py        # 🧪 Concurrent testing tool
+├── requirements.txt      # 📦 Pinned dependencies
+└── README.md             # 📖 Documentation
+🛡️ Edge Case Handling
+The system is designed to handle real-world messiness:
+
+Vague/Empty Files: Caught by the Classifier logic and routed to Manual Review.
+
+Hallucinations: Strict prompt engineering enforces JSON-only responses.
+
+JSON Errors: A dedicated cleaning utility strips Markdown formatting before parsing.
+
+Author: Devarsh
