@@ -21,7 +21,7 @@ def clean_and_parse_json(raw_output: str):
         # Return a fallback object so the pipeline doesn't crash
         return {"classification": "Unknown", "confidence": 0.0, "extracted_data": {}}
 
-# 2. Classifier Agent
+# 2. Classifier Agent (The Smart Version)
 def run_classification_crew(doc_content: str):
     # Safety check for empty content
     if not doc_content or len(doc_content) < 5:
@@ -31,16 +31,33 @@ def run_classification_crew(doc_content: str):
     
     classifier = Agent(
         role="Senior Document Classifier",
-        goal="Classify documents strictly as JSON.",
-        backstory="You are a machine that outputs only JSON. You never speak.",
+        # LEVEL 2 UPGRADE: The "Skeptical Auditor" Goal
+        goal="""
+        Accurately classify documents. 
+        CRITICAL RULE: You are a Skeptical Auditor. 
+        If a document looks like a casual email, a discussion about a document, or a mix of topics, 
+        you MUST NOT classify it as a specific business document. 
+        Instead, classify it as 'Other' or 'General_Correspondence' and assign a confidence score of 0.5 or lower.
+        """,
+        backstory="You are a machine that outputs only JSON. You never speak. You are extremely strict.",
         llm=llm,
         verbose=True
     )
 
+    # LEVEL 1 UPGRADE: Chain of Thought Prompt
     task = Task(
         description=f"""
-        Analyze the text below. Determine if it is an 'Invoice', 'Contract', or 'Technical Spec'.
+        Analyze the text below step-by-step to determine if it is an 'Invoice', 'Contract', or 'Technical Spec'.
         
+        ANALYSIS STEPS:
+        1. **Scan for key indicators**: Look for explicit headers like "INVOICE #", "AGREEMENT", or technical specs.
+        2. **Check for ambiguity**: Does the text mention multiple types? (e.g., an email *discussing* a contract).
+        3. **Verify structure**: A real Invoice must have line items and a total. A real Contract must have signatures or clauses.
+        4. **Decision**:
+           - If it is just an email *discussing* these topics, classify as "General_Correspondence".
+           - ONLY classify as "Invoice" if it is the *actual document* itself.
+           - If you are unsure, output a low confidence score (below 0.6).
+
         RULES:
         1. Output MUST be valid JSON.
         2. No markdown formatting.
@@ -94,10 +111,9 @@ def run_extraction_crew(doc_content: str, doc_type: str):
     
     return clean_and_parse_json(result)
 
-# 4. Manual Review Handler (Added)
+# 4. Manual Review Handler
 def run_manual_review_crew(doc_content: str, confidence: float):
     # This simulates the manual review process.
-    # In a real system, this might trigger an email alert or update a UI status.
     return {
         "status": "flagged_for_review",
         "reason": f"Low confidence score ({confidence})",

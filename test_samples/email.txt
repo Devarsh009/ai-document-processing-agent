@@ -1,12 +1,9 @@
-From: Sarah Jenkins
-Sent: Monday, December 12, 2025
-To: Engineering Team
-Subject: Quick update on the server
+Subject: Project Documentation
 
-Hey team,
+Hi Team,
 
-Just wanted to let you know the dev server might be down for about 10 minutes while I patch the OS. 
-It shouldn't take long. Let me know if you see any weird latency afterwards.
+I am attaching the document we discussed. It contains the technical specifications for the API build, but it also includes the liability clauses and the final billing schedule.
 
-Thanks,
-Sarah
+Is this considered the main contract or just the invoice attachment? It seems to be a mix of all three.
+
+Please review.

@@ -44,3 +44,28 @@ def manual_review_node(state: dict):
         "next_step": "manual_review",
         "validation_errors": ["Document confidence too low for auto-extraction"]
     }
+
+def validate_data(state):
+    data = state.get("extracted_data", {})
+    if not data:
+        return {"validation_errors": ["No data extracted"]}
+
+    errors = []
+    
+    # Example: Simple Logic Check for Invoices
+    if state.get("classification") == "Invoice":
+        subtotal = data.get("subtotal", 0.0) or 0.0
+        tax = data.get("tax", 0.0) or 0.0
+        total = data.get("total_due", 0.0) or 0.0
+        
+        # Allow small float rounding differences
+        if abs((subtotal + tax) - total) > 0.01:
+            error_msg = f"Math Error: {subtotal} + {tax} != {total}"
+            print(f"❌ VALIDATION FAILED: {error_msg}")
+            errors.append(error_msg)
+    
+    if errors:
+        return {"validation_errors": errors,
+                 "next_step": "manual_review"}
+    
+    return {"validation_errors": [], "next_step": "complete"}

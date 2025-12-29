@@ -8,17 +8,35 @@ from app.workflows.nodes import (
 )
 
 # --- 1. Define the Logic Function ---
-def route_document(state: AgentState):
+# In app/workflows/nodes.py (or graph.py depending on your setup)
+
+def route_document(state):
+    """
+    Determines the next step based on classification confidence.
+    """
     classification = state.get("classification")
     confidence = state.get("confidence_score", 0.0)
     
     print(f"-> ROUTING: Type={classification}, Confidence={confidence}")
 
-    # ROUTING LOGIC:
+    # PRODUCTION LOGIC (No Hacks)
+    # Since we improved the Prompt in crew_runner.py, the AI will now naturally 
+    # give the confusing email a Low Score (e.g., 0.5), so this check will pass legitimately.
+    if confidence < 0.70:
+        print(f"--- LOW CONFIDENCE ({confidence}) -> MANUAL REVIEW ---")
+        return "manual_review"
+    
+    return "extract"
+    # -------------------------------------------------------
+
+    # 2. Standard Production Logic
+    # If the AI is less than 70% sure, send to review.
+    # Since your Invoice scores ~0.98, it will skip this and go to "extract".
     if confidence < 0.70:
         return "manual_review"
-    else:
-        return "extract"
+
+    # 3. Happy Path
+    return "extract"
 
 # --- 2. Build the Graph ---
 def run_workflow(doc_id: str, file_path: str):
