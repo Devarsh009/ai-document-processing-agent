@@ -32,40 +32,84 @@ def classify_node(state: dict):
         "confidence_score": result.get("confidence")
     }
 
+def route_document(state):
+    """
+    Determines the next step based on classification confidence.
+    Used by the Conditional Edge in the Graph.
+    """
+    classification = state.get("classification")
+    confidence = state.get("confidence_score", 0.0)
+    
+    logger.info(f"-> ROUTING: Type={classification}, Confidence={confidence}")
+
+    # PRODUCTION LOGIC
+    # If the AI is less than 70% sure, send to review.
+    # This catches the ambiguous emails (which usually score ~0.2).
+    if confidence < 0.70:
+        logger.warning(f"--- LOW CONFIDENCE ({confidence}) -> MANUAL REVIEW ---")
+        return "manual_review"
+    
+    return "extract"
+
 def extract_node(state: dict):
     logger.info(f"--- EXTRACTING ({state['classification']}) ---")
     data = run_extraction_crew(state['content'], state['classification'])
     logger.info(f"Extraction complete: {data}")
     return {"extracted_data": data}
 
-def manual_review_node(state: dict):
-    logger.warning(f"--- LOW CONFIDENCE ({state['confidence_score']}) -> MANUAL REVIEW ---")
-    return {
-        "next_step": "manual_review",
-        "validation_errors": ["Document confidence too low for auto-extraction"]
-    }
-
-def validate_data(state):
+def validate_node(state: dict):
+    """
+    Deterministic Python validation to satisfy QA requirements.
+    Checks consistency of extracted data (e.g. Math).
+    """
+    logger.info("--- VALIDATING DATA ---")
     data = state.get("extracted_data", {})
+    classification = state.get("classification")
+    validation_errors = []
+
     if not data:
         return {"validation_errors": ["No data extracted"]}
 
-    errors = []
+    # Specific Rule for Invoices: Check Math
+    if classification == "Invoice":
+        try:
+            # Safely get values, defaulting to 0.0 if missing
+            subtotal = float(data.get("subtotal", 0.0) or 0.0)
+            tax = float(data.get("tax", 0.0) or 0.0)
+            total = float(data.get("total_due", 0.0) or 0.0)
+
+            # Check math with a small tolerance for floating point rounding
+            calculated_total = subtotal + tax
+            if abs(calculated_total - total) > 0.01:
+                error_msg = f"Math Mismatch: Subtotal ({subtotal}) + Tax ({tax}) != Total ({total})"
+                logger.error(f"❌ {error_msg}")
+                validation_errors.append(error_msg)
+            else:
+                logger.info("✅ Math Validation Passed")
+
+        except ValueError:
+            error_msg = "Invalid number format in extracted data"
+            logger.error(error_msg)
+            validation_errors.append(error_msg)
     
-    # Example: Simple Logic Check for Invoices
-    if state.get("classification") == "Invoice":
-        subtotal = data.get("subtotal", 0.0) or 0.0
-        tax = data.get("tax", 0.0) or 0.0
-        total = data.get("total_due", 0.0) or 0.0
-        
-        # Allow small float rounding differences
-        if abs((subtotal + tax) - total) > 0.01:
-            error_msg = f"Math Error: {subtotal} + {tax} != {total}"
-            print(f"❌ VALIDATION FAILED: {error_msg}")
-            errors.append(error_msg)
+    # If errors exist, we will route to manual review next
+    if validation_errors:
+        return {"validation_errors": validation_errors}
+    
+    return {"validation_errors": []}
+
+def manual_review_node(state: dict):
+    # Logs why it ended up here
+    confidence = state.get("confidence_score")
+    errors = state.get("validation_errors", [])
     
     if errors:
-        return {"validation_errors": errors,
-                 "next_step": "manual_review"}
-    
-    return {"validation_errors": [], "next_step": "complete"}
+        logger.warning(f"--- MANUAL REVIEW TRIGGERED: Validation Errors: {errors} ---")
+    else:
+        logger.warning(f"--- MANUAL REVIEW TRIGGERED: Low Confidence ({confidence}) ---")
+        
+    return {
+        "next_step": "manual_review",
+        # Ensure validation errors are persisted if they exist
+        "validation_errors": errors if errors else ["Document confidence too low"]
+    }
