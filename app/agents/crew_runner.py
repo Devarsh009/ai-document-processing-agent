@@ -1,50 +1,80 @@
 import os
 import json
 from crewai import Agent, Task, Crew, LLM
+from app.config import settings
+from app.utils.logger import get_logger
 
-# 1. Setup LLM
+logger = get_logger(__name__)
+
+
 def get_llm():
+    """Initializes LLM client using configured settings with actionable errors."""
+    api_key = settings.GROQ_API_KEY or os.getenv("GROQ_API_KEY")
+    if not api_key:
+        raise ValueError(
+            "GROQ_API_KEY is not configured. Please set GROQ_API_KEY in your environment or .env file."
+        )
     return LLM(
-        model="groq/llama-3.1-8b-instant",
-        api_key=os.getenv("GROQ_API_KEY"),
-        temperature=0.0
+        model=settings.LLM_MODEL,
+        api_key=api_key,
+        temperature=0.0,
     )
 
-# Helper to clean LLM output
-def clean_and_parse_json(raw_output: str):
-    try:
-        # Remove code blocks if present
-        clean_text = raw_output.replace("```json", "").replace("```", "").strip()
-        return json.loads(clean_text)
-    except json.JSONDecodeError:
-        print(f"FAILED TO PARSE JSON. RAW OUTPUT: {raw_output}")
-        # Return a fallback object so the pipeline doesn't crash
+
+def clean_and_parse_json(raw_output: str) -> dict:
+    """
+    Safely extracts and parses JSON from raw LLM output.
+    Strips markdown code fences, handles conversational wrapping,
+    and returns a safe fallback dictionary if parsing fails.
+    """
+    if not raw_output or not isinstance(raw_output, str):
         return {"classification": "Unknown", "confidence": 0.0, "extracted_data": {}}
 
-# 2. Classifier Agent (The Smart Version)
-def run_classification_crew(doc_content: str):
-    # Safety check for empty content
-    if not doc_content or len(doc_content) < 5:
+    clean_text = raw_output.replace("```json", "").replace("```", "").strip()
+    try:
+        parsed = json.loads(clean_text)
+        if isinstance(parsed, dict):
+            return parsed
+        return {"classification": "Unknown", "confidence": 0.0, "extracted_data": {}}
+    except json.JSONDecodeError:
+        # Fallback: attempt to extract JSON object between outer curly braces
+        start = clean_text.find("{")
+        end = clean_text.rfind("}")
+        if start != -1 and end != -1 and end > start:
+            try:
+                parsed = json.loads(clean_text[start : end + 1])
+                if isinstance(parsed, dict):
+                    return parsed
+            except json.JSONDecodeError:
+                pass
+        logger.warning(f"Failed to parse JSON from LLM output. Snippet: {raw_output[:200]}")
+        return {"classification": "Unknown", "confidence": 0.0, "extracted_data": {}}
+
+
+def run_classification_crew(doc_content: str) -> dict:
+    """
+    Classifies a document using the Skeptical Auditor prompt.
+    Ambiguous content, emails, or short text receive low confidence.
+    """
+    if not doc_content or len(doc_content.strip()) < 5:
         return {"classification": "Unknown", "confidence": 0.0}
 
     llm = get_llm()
-    
+
     classifier = Agent(
         role="Senior Document Classifier",
-        # LEVEL 2 UPGRADE: The "Skeptical Auditor" Goal
         goal="""
-        Accurately classify documents. 
-        CRITICAL RULE: You are a Skeptical Auditor. 
-        If a document looks like a casual email, a discussion about a document, or a mix of topics, 
-        you MUST NOT classify it as a specific business document. 
+        Accurately classify documents.
+        CRITICAL RULE: You are a Skeptical Auditor.
+        If a document looks like a casual email, a discussion about a document, or a mix of topics,
+        you MUST NOT classify it as a specific business document.
         Instead, classify it as 'Other' or 'General_Correspondence' and assign a confidence score of 0.5 or lower.
         """,
         backstory="You are a machine that outputs only JSON. You never speak. You are extremely strict.",
         llm=llm,
-        verbose=True
+        verbose=False,
     )
 
-    # LEVEL 1 UPGRADE: Chain of Thought Prompt
     task = Task(
         description=f"""
         Analyze the text below step-by-step to determine if it is an 'Invoice', 'Contract', or 'Technical Spec'.
@@ -69,16 +99,17 @@ def run_classification_crew(doc_content: str):
         ----------------
         """,
         expected_output='{"classification": "Invoice", "confidence": 0.98}',
-        agent=classifier
+        agent=classifier,
     )
 
-    crew = Crew(agents=[classifier], tasks=[task], verbose=True)
+    crew = Crew(agents=[classifier], tasks=[task], verbose=False)
     result = str(crew.kickoff())
-    
+
     return clean_and_parse_json(result)
 
-# 3. Extractor Agent
-def run_extraction_crew(doc_content: str, doc_type: str):
+
+def run_extraction_crew(doc_content: str, doc_type: str) -> dict:
+    """Extracts structured fields based on the classified document type."""
     llm = get_llm()
 
     extractor = Agent(
@@ -86,12 +117,12 @@ def run_extraction_crew(doc_content: str, doc_type: str):
         goal=f"Extract data from {doc_type}s as JSON.",
         backstory="You are a machine that outputs only JSON.",
         llm=llm,
-        verbose=True
+        verbose=False,
     )
 
     task = Task(
         description=f"""
-        Extract key fields (like Total, Vendor, Dates, Parties) from the text below.
+        Extract key fields (like total_due, subtotal, tax, vendor, dates, parties) from the text below.
         
         RULES:
         1. Output MUST be valid JSON.
@@ -102,20 +133,20 @@ def run_extraction_crew(doc_content: str, doc_type: str):
         {doc_content[:3000]}
         ----------------
         """,
-        expected_output='{"total": 1000, "vendor": "Acme"}',
-        agent=extractor
+        expected_output='{"subtotal": 7500.0, "tax": 750.0, "total_due": 8250.0, "vendor": "Acme"}',
+        agent=extractor,
     )
 
-    crew = Crew(agents=[extractor], tasks=[task], verbose=True)
+    crew = Crew(agents=[extractor], tasks=[task], verbose=False)
     result = str(crew.kickoff())
-    
+
     return clean_and_parse_json(result)
 
-# 4. Manual Review Handler
-def run_manual_review_crew(doc_content: str, confidence: float):
-    # This simulates the manual review process.
+
+def run_manual_review_crew(doc_content: str, confidence: float) -> dict:
+    """Simulates manual review metadata assignment for low-confidence or invalid documents."""
     return {
         "status": "flagged_for_review",
-        "reason": f"Low confidence score ({confidence})",
-        "action_required": "Human verification needed"
+        "reason": f"Confidence score ({confidence}) below threshold or validation failed",
+        "action_required": "Human verification needed",
     }

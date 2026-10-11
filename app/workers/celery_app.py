@@ -1,9 +1,10 @@
 from celery import Celery
+from app.config import settings
 
 celery_app = Celery(
     "document_worker",
-    broker="redis://localhost:6379/0",
-    backend="redis://localhost:6379/0",
+    broker=settings.REDIS_URL,
+    backend=settings.REDIS_URL,
 )
 
 celery_app.conf.update(
@@ -12,7 +13,8 @@ celery_app.conf.update(
     result_serializer="json",
     timezone="UTC",
     enable_utc=True,
+    task_track_started=True,
 )
 
-# 🔴 THIS LINE IS CRITICAL
-import app.workers.tasks  # noqa
+# Critical: import tasks so Celery registers them on startup
+import app.workers.tasks  # noqa: E402, F401

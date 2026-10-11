@@ -1,4 +1,33 @@
+# Environment & secrets
 .env
-venv/
+.env.*
+!.env.example
+
+# Python cache & artifacts
 __pycache__/
+*.py[cod]
+*$py.class
+*.so
+build/
+dist/
+*.egg-info/
+
+# Virtual environments
+venv/
+env/
+.venv/
+
+# Redis & Celery runtime artifacts
+dump.rdb
+*.rdb
+celerybeat-schedule*
+*.log
+
+# Testing & coverage
+.pytest_cache/
+.coverage
+.coverage.*
+htmlcov/
+
+# Local uploads & temporary runtime directories
 uploads/
