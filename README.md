@@ -1,76 +1,104 @@
 # AI Document Processing Agent
 
-Asynchronous document classification, extraction, and validation pipeline built with FastAPI, Celery, Redis, LangGraph, and CrewAI.
+Asynchronous document intelligence, multi-format parsing, extraction, and validation pipeline built with FastAPI, Celery, Redis, LangGraph, and CrewAI.
 
 ## Overview
 
-This repository implements an asynchronous document processing service designed to handle semi-structured business text (such as invoices, contracts, and correspondence). Incoming documents are ingested via HTTP, enqueued for background processing, classified using an LLM-based discriminator, and routed through a stateful graph that performs structured extraction and rule-based validation.
+This repository implements an asynchronous document processing service engineered to ingest semi-structured business documents (invoices, contracts, and correspondence). Incoming documents are validated via HTTP, staged to server storage, persisted in a persistent SQLite repository, enqueued for background Celery execution, and processed through a stateful LangGraph workflow. The workflow classifies content using an LLM discriminator, extracts structured key-value entities, applies deterministic arithmetic validation, and routes uncertain or inconsistent documents to an actionable human review workflow.
 
-### System Capabilities
+### Key Capabilities
 
-* **Decoupled Ingestion**: HTTP upload requests are acknowledged immediately with a tracking identifier, offloading execution to background Celery workers via Redis.
-* **Discriminator Classification**: The classification stage uses chain-of-thought prompting to differentiate formal business records from informal correspondence discussing business records.
-* **Stateful Conditional Routing**: Documents scoring at or above the confidence threshold (default: 0.70) proceed to extraction; documents below threshold route directly to manual review.
-* **Deterministic Post-Extraction Validation**: Extracted fields undergo programmatic sanity checks (for example, invoice arithmetic validation where subtotal + tax must equal total). Failures divert the document to manual review.
-* **Polling Interface**: A dedicated status endpoint exposes task progression and final payloads.
+* **Asynchronous Multi-Format Ingestion**: Accepts plain text (`.txt`), text-based PDF (`.pdf`), and Microsoft Word (`.docx`) files. Requests are acknowledged immediately with HTTP 202 and a status URL.
+* **Format and Signature Validation**: Enforces maximum upload sizes (10 MB default), extension allowlisting, and binary magic-byte validation (for example, `%PDF-` headers for PDF and zip signatures for DOCX).
+* **Cross-Process Persistence**: Job state and lifecycle stages are tracked in a persistent SQLite database with Write-Ahead Logging (WAL) enabled, ensuring data integrity across web and worker processes without relying on process-local memory.
+* **Discriminator Classification**: Uses structured prompting with Groq-hosted Llama 3.1 8B to classify document types and identify ambiguous correspondence discussing contracts or invoices.
+* **Prompt Injection Hardening**: Prompts enforce security boundaries treating document text strictly as untrusted passive data, preventing instructions inside documents from altering agent roles or tool execution.
+* **Stateful Conditional Routing**: Documents scoring above threshold (default: 0.70) proceed to structured extraction. Documents with low confidence or empty text route to manual review.
+* **Deterministic Post-Extraction Validation**: Validates invoice calculations (subtotal + tax == total_due). Arithmetic discrepancies route the document to manual review.
+* **Human-in-the-Loop Review Lifecycle**: Provides an explicit review endpoint (`POST /v1/documents/{id}/review`) supporting `approve`, `reject`, and `override` actions with full audit metadata.
+* **Readiness and Liveness Probes**: Implements `/v1/health` for process liveness and `/v1/ready` for end-to-end dependency verification (database connectivity, Redis broker ping, and storage writability).
+* **Synthetic Evaluation Harness**: Includes an offline, reproducible benchmark runner (`evaluation/run_eval.py`) evaluating classification accuracy, straight-through processing (STP) rate, and review routing.
 
-### Design Boundaries and Limitations
+### Unsupported Scope and Boundaries
 
-* **Input Formats**: Plain text files (`.txt`). Optical character recognition (OCR) for PDFs and images is outside the scope of this implementation.
-* **Persistence Model**: Ephemeral. Files are stored on the local filesystem (`uploads/`) and task results are cached in the Celery Redis backend. A relational database is not configured.
-* **Confidence Scoring**: Confidence values are model-generated numerical estimates produced via prompt instructions; they are not calibrated probabilities.
-* **Access Control**: No authentication, authorization, or tenant isolation is implemented.
+* **Optical Character Recognition (OCR)**: Scanned PDFs, photographs, and raster images are not parsed. If a PDF contains no extractable text layer, it is flagged with an explicit warning and routed to review.
+* **CAD and Spatial Reasoning**: Architectural drawings, blueprints, spatial BIM models, and construction diagrams are unsupported.
+* **Priced Subcontractor Impact Calculations**: No financial estimation or construction takeoff logic is implemented.
+* **Authentication and Authorization**: Endpoints are unauthenticated and intended for internal or VPC deployment.
 
 ## Architecture
 
 ```mermaid
 graph TD
-    Client([Client]) -->|POST /process| API[FastAPI Application]
-    API -->|Save file| Disk[Local Storage uploads/]
-    API -->|apply_async doc_id, file_path| RedisBroker[(Redis Broker)]
-    API -->|doc_id, status: queued| Client
+    Client([Client / API Consumer]) -->|POST /v1/documents| API[FastAPI Application]
+    API -->|Validate size & magic bytes| Val[File Validator]
+    Val -->|Write doc_id.ext| Disk[Server Storage uploads/]
+    API -->|Create job record: received| DB[(SQLite Database WAL)]
+    API -->|apply_async doc_id, file_path| Broker[(Redis Broker)]
+    API -->|Update job: queued| DB
+    API -->|HTTP 202: id, status_url| Client
 
-    Worker[Celery Worker] -->|Fetch task| RedisBroker
+    Worker[Celery Background Worker] -->|Fetch job task| Broker
+    Worker -->|Update job: processing| DB
     Worker --> Graph[LangGraph Workflow]
 
     subgraph LangGraph ["LangGraph Execution Graph"]
-        IngestNode[Ingest Node<br/>Read file content] --> ClassifyNode[Classify Node<br/>CrewAI / Groq LLM]
+        IngestNode[1. Ingest Node<br/>Multi-format Parser] --> ClassifyNode[2. Classify Node<br/>CrewAI / Groq LLM]
         ClassifyNode --> RouteCheck{Confidence >= 0.70}
-        RouteCheck -->|True| ExtractNode[Extract Node<br/>CrewAI / Groq LLM]
-        RouteCheck -->|False| ReviewNode[Manual Review Node<br/>Flag reason & low score]
-        ExtractNode --> ValidateNode[Validate Node<br/>Arithmetic sanity check]
+        RouteCheck -->|True| ExtractNode[3. Extract Node<br/>CrewAI / Groq LLM]
+        RouteCheck -->|False| ReviewNode[Manual Review Node<br/>Assign flag & reason]
+        ExtractNode --> ValidateNode[4. Validate Node<br/>Arithmetic check]
         ValidateNode --> MathCheck{Validation Errors}
         MathCheck -->|Errors present| ReviewNode
-        MathCheck -->|No errors| Completed([Completed])
-        ReviewNode --> Completed
+        MathCheck -->|Valid| CompleteNode([Completed])
+        ReviewNode --> CompleteNode
     end
 
-    Graph -->|Persist state| RedisBackend[(Redis Backend)]
-    Client -->|GET /status/:doc_id| API
-    API -->|AsyncResult doc_id| RedisBackend
+    Graph -->|Return state| Worker
+    Worker -->|Update job: succeeded / needs_review| DB
+    Worker -->|Cache task result| RedisBackend[(Redis Backend)]
+
+    Client -->|GET /v1/documents/:id| API
+    API -->|Read metadata & stage| DB
+
+    Client -->|GET /v1/documents/:id/result| API
+    API -->|Read extracted data / 409 if active| DB
+
+    Client -->|POST /v1/documents/:id/review| API
+    API -->|Audit decision: approve / override / reject| DB
 ```
+
+## Lifecycle States
+
+Document jobs follow an explicit state machine:
+
+| State | Description | Legal Transitions |
+| :--- | :--- | :--- |
+| `received` | Upload payload validated and persisted to disk and DB | `queued`, `failed` |
+| `queued` | Task enqueued in Redis broker | `processing`, `failed` |
+| `processing` | Worker actively running parsing and agent workflow | `succeeded`, `needs_review`, `failed` |
+| `needs_review` | Low confidence, ambiguity, or arithmetic validation mismatch | `succeeded` (approved/overridden), `rejected` |
+| `succeeded` | Extraction validated cleanly or approved via human review | Terminal state |
+| `failed` | Worker execution error or unrecoverable parse failure | Terminal state |
+| `rejected` | Auditor rejected document during human review | Terminal state |
 
 ## Tech Stack
 
 | Layer | Component | Notes |
 | :--- | :--- | :--- |
-| API Layer | FastAPI / Uvicorn | Request validation, file persistence, task dispatching |
-| Task Queue | Celery | Distributed task execution with task tracking |
-| Message Broker & Backend | Redis | Broker queue and task result storage |
-| Orchestration | LangGraph | StateGraph workflow with conditional routing |
-| Agent Execution | CrewAI / Groq | LLM integration using `llama-3.1-8b-instant` |
-| Settings Management | Pydantic Settings | Typed configuration and runtime environment validation |
-| Test Suite | Pytest | Unit and workflow tests with mocked network dependencies |
-
-## Prerequisites
-
-* Python 3.9 or higher (tested on Python 3.13)
-* Redis server (running locally or accessible over network)
-* Groq API key (required for live inference; mocked in automated tests)
+| API Layer | FastAPI / Uvicorn | Request validation, lifecycle routing, and probe endpoints |
+| Background Workers | Celery | Distributed execution with bounded retries and backoff |
+| Broker & Result Cache | Redis | In-memory message broker and result cache |
+| Job Persistence | SQLite (WAL mode) | Multi-process cross-service state store with audit log |
+| Orchestration | LangGraph | StateGraph workflow with conditional confidence edges |
+| Agent Logic | CrewAI + Groq (`llama-3.1-8b-instant`) | Prompt-hardened discriminator and field extractor |
+| Document Parsing | PyMuPDF, python-docx | Text extraction for TXT, text PDF, and DOCX |
+| Configuration | Pydantic Settings | Typed configuration validated at startup |
+| Test Suite | Pytest | 43 automated tests covering API, parsers, and graph |
 
 ## Environment Configuration
 
-Configuration is managed via environment variables and loaded through Pydantic Settings.
+Configuration values are managed via environment variables and loaded by Pydantic Settings.
 
 Copy `.env.example` to `.env`:
 
@@ -86,11 +114,14 @@ Available configuration keys:
 
 | Key | Default | Description |
 | :--- | :--- | :--- |
-| `GROQ_API_KEY` | None | API key for Groq LLM inference |
-| `REDIS_URL` | `redis://localhost:6379/0` | Connection URL for Celery broker and result backend |
+| `GROQ_API_KEY` | None | API key for Groq LLM inference (required for live execution) |
+| `REDIS_URL` | `redis://localhost:6379/0` | Connection URL for Celery message broker |
+| `DATABASE_PATH` | `jobs.db` | Local SQLite database file path |
+| `UPLOAD_DIR` | `uploads` | Storage directory for uploaded files |
 | `LLM_MODEL` | `groq/llama-3.1-8b-instant` | Model string passed to CrewAI |
-| `CONFIDENCE_THRESHOLD` | `0.70` | Cutoff score for automated extraction vs. manual review |
-| `UPLOAD_DIR` | `uploads` | Directory for storing uploaded files |
+| `CONFIDENCE_THRESHOLD` | `0.70` | Threshold below which items route to manual review |
+| `MAX_UPLOAD_SIZE_BYTES` | `10485760` (10 MB) | Maximum upload size in bytes |
+| `REQUEST_TIMEOUT_SECONDS`| `30.0` | Timeout in seconds for external LLM calls |
 
 ## Setup and Installation
 
@@ -121,7 +152,7 @@ Available configuration keys:
 
 ## Running the Services
 
-A complete local runtime requires three concurrent processes.
+A complete local runtime requires three concurrent terminal sessions:
 
 ### 1. Start Redis
 ```bash
@@ -145,97 +176,114 @@ celery -A app.workers.celery_app:celery_app worker --loglevel=info
 uvicorn app.main:app --reload
 ```
 
-The service listens on `http://127.0.0.1:8000`. OpenAPI specifications and Swagger documentation are available at `http://127.0.0.1:8000/docs`.
+The service listens on `http://127.0.0.1:8000`. Swagger documentation is available at `http://127.0.0.1:8000/docs`.
 
 ## API Specification
 
-### GET /health
+### System Endpoints
 
-Service liveness check.
-
-Response (200 OK):
+#### GET /v1/health
+Liveness probe.
 ```json
 {
   "status": "ok",
   "app": "ai-document-processing-agent",
-  "version": "0.1.0"
+  "version": "0.2.0"
 }
 ```
 
-### POST /process
-
-Accepts a multipart file upload and enqueues it for background execution.
-
-* Content-Type: `multipart/form-data`
-* Field: `file` (raw text file)
-
-Response (200 OK):
+#### GET /v1/ready
+Readiness probe testing database, broker, and filesystem writable state.
 ```json
 {
+  "status": "ready",
+  "database": true,
+  "broker": true,
+  "storage_writable": true
+}
+```
+
+### Document Ingestion and Retrieval
+
+#### POST /v1/documents
+Uploads a document for asynchronous processing.
+* Header: `Content-Type: multipart/form-data`
+* Field: `file` (`.txt`, `.pdf`, `.docx`)
+* Response: `202 Accepted`
+
+```json
+{
+  "id": "e6a0d24e-289b-4340-9a3b-9366df02a7b6",
   "status": "queued",
-  "doc_id": "4a737f52-47de-4934-8b64-88f58b738e4a",
-  "filename": "Invoice.txt"
-}
-```
-
-Status Codes:
-* `200 OK`: File stored and task enqueued successfully.
-* `400 Bad Request`: Empty or invalid filename.
-* `503 Service Unavailable`: Redis broker is unreachable.
-
-### GET /status/{doc_id}
-
-Queries processing progress and retrieves final state.
-
-* Path parameter: `doc_id` (UUID format)
-
-Response (200 OK, Completed Extraction):
-```json
-{
-  "doc_id": "4a737f52-47de-4934-8b64-88f58b738e4a",
-  "status": "completed",
   "filename": "Invoice.txt",
-  "result": {
-    "doc_id": "4a737f52-47de-4934-8b64-88f58b738e4a",
-    "classification": "Invoice",
-    "confidence_score": 0.95,
-    "extracted_data": {
-      "subtotal": 7500.0,
-      "tax": 750.0,
-      "total_due": 8250.0,
-      "vendor": "CloudCompute Inc."
-    },
-    "validation_errors": [],
-    "next_step": null
-  },
-  "error": null
+  "status_url": "/v1/documents/e6a0d24e-289b-4340-9a3b-9366df02a7b6",
+  "created_at": "2026-10-12T02:00:00.000000+00:00"
 }
 ```
 
-Response (200 OK, Manual Review Triggered):
+#### GET /v1/documents/{id}
+Retrieves status and lifecycle metadata.
 ```json
 {
-  "doc_id": "4a737f52-47de-4934-8b64-88f58b738e4a",
-  "status": "completed",
+  "id": "e6a0d24e-289b-4340-9a3b-9366df02a7b6",
+  "status": "needs_review",
+  "processing_stage": "review",
   "filename": "email.txt",
-  "result": {
-    "classification": "General_Correspondence",
-    "confidence_score": 0.40,
-    "extracted_data": {},
-    "validation_errors": [
-      "Confidence (0.4) below threshold (0.7)"
-    ],
-    "next_step": "manual_review"
-  },
-  "error": null
+  "content_type": "text/plain",
+  "file_size_bytes": 347,
+  "sha256_checksum": "a3b2c1...",
+  "classification": "General_Correspondence",
+  "confidence_score": 0.40,
+  "validation_errors": [
+    "Confidence (0.4) below threshold (0.7)"
+  ],
+  "review_decision": null,
+  "error_message": null,
+  "duration_ms": 245.2,
+  "created_at": "2026-10-12T02:00:00.000000+00:00",
+  "updated_at": "2026-10-12T02:00:01.000000+00:00",
+  "completed_at": null
 }
 ```
 
-Status Codes:
-* `200 OK`: Task found. Values for `status`: `queued`, `processing`, `completed`, `failed`.
-* `400 Bad Request`: Format of `doc_id` is not a valid UUID.
-* `404 Not Found`: No file or task metadata exists for the given ID.
-* `503 Service Unavailable`: Celery backend (Redis) is unreachable.
+#### GET /v1/documents/{id}/result
+Retrieves extracted payload.
+* Status `200 OK` (when `succeeded` or `needs_review`):
+```json
+{
+  "id": "e6a0d24e-289b-4340-9a3b-9366df02a7b6",
+  "status": "succeeded",
+  "classification": "Invoice",
+  "confidence_score": 0.95,
+  "extracted_data": {
+    "subtotal": 7500.0,
+    "tax": 750.0,
+    "total_due": 8250.0,
+    "vendor": "CloudCompute Inc."
+  },
+  "validation_errors": [],
+  "review_decision": null,
+  "duration_ms": 312.4,
+  "completed_at": "2026-10-12T02:00:02.000000+00:00"
+}
+```
+* Status `409 Conflict`: Returned if the document is still in `received`, `queued`, or `processing` states.
+
+#### POST /v1/documents/{id}/review
+Submits a review decision for a document in `needs_review` status.
+* Request Body:
+```json
+{
+  "action": "override",
+  "notes": "Auditor confirmed vendor name and verified invoice subtotal",
+  "overrides": {
+    "vendor": "CloudCompute Inc.",
+    "total_due": 8250.0
+  }
+}
+```
+* Response: `200 OK` with updated document record transitioned to `succeeded` or `rejected`.
+* Status `400 Bad Request`: Returned if document is not in `needs_review` state.
 
 ## Automated Testing
 
@@ -248,23 +296,40 @@ pytest -v
 
 ### Test Scope
 
-* **JSON Output Parsing** (`tests/test_parser.py`): Strips markdown code blocks, extracts JSON embedded in conversational output, and falls back safely on parse failures.
-* **Graph Nodes** (`tests/test_nodes.py`): Verifies file ingestion error handling, classification extraction, routing branches, and currency/numeric arithmetic validation.
-* **Workflow Execution** (`tests/test_graph.py`): Validates end-to-end LangGraph transitions for successful extractions, low-confidence emails, and arithmetic mismatches.
-* **API Endpoints** (`tests/test_api.py`): Verifies HTTP contract, file upload dispatching, error status codes, and task state lookups using mocked Celery results.
+* **API Contract and Lifecycles** (`tests/test_api.py`): Upload validation, size limits, format detection, readiness probes, 409 conflict handling, human review lifecycle transitions, and legacy backward compatibility routes.
+* **Storage and State Machine** (`tests/test_storage.py`): SQLite persistence, WAL execution, legal state machine transitions, illegal transition rejections, and review audit trails.
+* **Document Parsers** (`tests/test_parsers.py`): Plain text, PDF magic-byte checks, empty/scanned document warnings, and size limits.
+* **Graph Nodes** (`tests/test_nodes.py`): Ingestion error handling, classification, confidence-based conditional routing, and currency/numeric arithmetic validation.
+* **Workflow Execution** (`tests/test_graph.py`): End-to-end LangGraph transitions for successful extractions, low-confidence emails, and arithmetic mismatches.
+* **JSON Parser Robustness** (`tests/test_parser.py`): Markdown code block stripping, conversational output extraction, and fallback parsing.
 
-### Concurrency Simulation
+## Evaluation Harness
 
-To execute concurrent client requests against a running local server:
+The repository provides a synthetic evaluation harness measuring extraction quality and operational routing behavior under deterministic test conditions.
+
+Run the evaluation:
 ```bash
-python test_script.py
+python evaluation/run_eval.py
 ```
-This script uploads the sample documents in `test_samples/` using a thread pool and outputs polling endpoints.
 
-## Performance and Metrics
+To evaluate against the live Groq API using your configured `GROQ_API_KEY`:
+```bash
+python evaluation/run_eval.py --live
+```
 
-* **Reported Prototype Extraction Rate**: Prior internal runs recorded 76% straight-through processing across a sample set of 100 documents, with the remaining 24% correctly routed to manual review. This metric is documented as a baseline reference; formal benchmark scripts and datasets are planned for future revisions.
-* **Ingestion Latency vs. Processing Duration**: The `POST /process` endpoint responds in under 300 ms because it only validates and stages the file and enqueues a message to Redis. End-to-end task completion latency depends on worker concurrency, queue backlog, and LLM inference time.
+### Metrics Measured
+
+* **Classification Accuracy**: Percentage of test cases correctly categorized against ground truth.
+* **Straight-Through Processing (STP) Rate**: Defined strictly as documents classified with high confidence (>= 0.70), zero validation errors, and completed without human intervention.
+* **Manual Review Routing Rate**: Percentage of documents routed to human review due to ambiguity, low confidence, or arithmetic mismatches.
+* **Validation Error Rate**: Percentage of documents encountering arithmetic or schema validation failures.
+* **Processing Latency**: Document execution wall-clock time in milliseconds.
+
+### Evaluation Results Note
+
+* **Synthetic Harness Baseline**: The included synthetic dataset tests edge cases (arithmetic mismatches, prompt injection attempts, and empty documents), demonstrating deterministic routing logic.
+* **Historical Author-Reported Metric (76% STP on 100 documents)**: Prior project observations reported approximately 76% automated extraction on a sample of 100 business files. This figure represents author-reported baseline observations on uncommitted files. It is not manufactured as a tested fact of the synthetic test suite.
+* **API Ingestion Latency (< 300 ms)**: Measures initial upload acceptance and queue submission, which is non-blocking. Total end-to-end document completion time depends on worker availability, queue depth, and model inference latency.
 
 ## Repository Structure
 
@@ -273,32 +338,47 @@ ai-document-processing-agent/
 ├── app/
 │   ├── agents/
 │   │   ├── __init__.py
-│   │   └── crew_runner.py     # LLM agent definitions and JSON parsing
+│   │   └── crew_runner.py     # Prompt-hardened classifier and extractor
+│   ├── parsers/
+│   │   ├── __init__.py
+│   │   └── document_parser.py # Multi-format parser (TXT, PDF, DOCX) & signature checks
+│   ├── storage/
+│   │   ├── __init__.py
+│   │   └── repository.py      # SQLite WAL persistence and state machine
 │   ├── utils/
 │   │   ├── __init__.py
-│   │   ├── logger.py          # Application logging
-│   │   └── state_store.py     # In-memory helper stub
+│   │   └── logger.py          # Application logging
 │   ├── workers/
 │   │   ├── __init__.py
 │   │   ├── celery_app.py      # Celery broker and backend configuration
-│   │   └── tasks.py           # Celery task definitions
+│   │   └── tasks.py           # Background tasks with bounded retries
 │   ├── workflows/
 │   │   ├── __init__.py
 │   │   ├── graph.py           # LangGraph StateGraph orchestration
 │   │   ├── nodes.py           # Ingestion, classification, validation nodes
-│   │   └── state.py           # AgentState TypedDict schema
-│   ├── config.py              # Pydantic Settings validation
-│   └── main.py                # FastAPI endpoints and route handlers
-├── test_samples/              # Sample documents (Invoice.txt, contract.txt, email.txt)
-├── tests/                     # Automated pytest suite
+│   │   └── state.py           # AgentState TypedDict definition
+│   ├── config.py              # Typed Pydantic Settings
+│   └── main.py                # FastAPI endpoints, v1 lifecycle, review, and probes
+├── evaluation/                # Synthetic evaluation harness
 │   ├── __init__.py
-│   ├── test_api.py            # API endpoint unit tests
-│   ├── test_graph.py          # Graph orchestration tests
+│   ├── dataset.py             # Labeled synthetic test cases
+│   └── run_eval.py            # Evaluation benchmark runner
+├── test_samples/              # Sample documents (Invoice.txt, contract.txt, email.txt)
+├── tests/                     # 43 automated pytest unit and integration tests
+│   ├── __init__.py
+│   ├── test_api.py            # API endpoint and lifecycle tests
+│   ├── test_graph.py          # Workflow orchestration tests
 │   ├── test_nodes.py          # Node logic and validation tests
-│   └── test_parser.py         # Parser robustness tests
-├── .env.example               # Environment variable template
-├── .gitignore                 # Ignore patterns for build, cache, and Redis files
+│   ├── test_parser.py         # JSON parsing tests
+│   ├── test_parsers.py        # File validation and document parser tests
+│   └── test_storage.py        # SQLite persistence and review tests
+├── .github/
+│   └── workflows/
+│       └── ci.yml             # GitHub Actions continuous integration workflow
+├── .env.example               # Environment variable configuration template
+├── .gitignore                 # Ignore patterns for build, cache, DB, and Redis files
+├── pyproject.toml             # Pytest and Ruff toolchain configuration
 ├── requirements.txt           # Pinned dependencies
-├── test_script.py             # Concurrent upload simulation
-└── README.md                  # System documentation
+├── test_script.py             # Concurrent upload simulation script
+└── README.md                  # Comprehensive system documentation
 ```

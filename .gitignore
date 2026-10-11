@@ -23,6 +23,12 @@ dump.rdb
 celerybeat-schedule*
 *.log
 
+# Persistent local databases & WAL
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+
 # Testing & coverage
 .pytest_cache/
 .coverage

@@ -31,7 +31,7 @@ def test_ingest_document_empty_file():
         state = {"file_path": temp_path}
         res = ingest_document(state)
         assert res["content"] == ""
-        assert "File is empty" in res["validation_errors"]
+        assert any("File is empty" in err for err in res["validation_errors"])
     finally:
         if os.path.exists(temp_path):
             os.remove(temp_path)

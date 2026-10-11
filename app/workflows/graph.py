@@ -72,6 +72,8 @@ def run_workflow(doc_id: str, file_path: str) -> dict:
         "doc_id": doc_id,
         "file_path": file_path,
         "content": "",
+        "page_count": 0,
+        "format": "unknown",
         "classification": None,
         "confidence_score": 0.0,
         "extracted_data": {},

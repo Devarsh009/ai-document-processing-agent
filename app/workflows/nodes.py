@@ -3,43 +3,78 @@ import re
 from typing import Any
 from app.agents.crew_runner import run_classification_crew, run_extraction_crew
 from app.config import settings
+from app.parsers.document_parser import parse_document, DocumentParsingError, UnsupportedFileTypeError
 from app.utils.logger import get_logger
 
 logger = get_logger(__name__)
 
 
 def ingest_document(state: dict) -> dict:
-    """Reads the document from disk and populates state content."""
+    """
+    Reads and parses the document using the multi-format DocumentParser.
+    Supports TXT, text-based PDF, and DOCX.
+    """
     file_path = state.get("file_path", "")
     logger.info(f"Ingesting file: {file_path}")
 
     if not file_path or not os.path.exists(file_path):
         logger.error(f"File not found: {file_path}")
-        return {"content": "", "validation_errors": [f"File not found: {file_path}"]}
+        return {
+            "content": "",
+            "page_count": 0,
+            "format": "unknown",
+            "validation_errors": [f"File not found: {file_path}"],
+        }
 
     try:
-        with open(file_path, "r", encoding="utf-8") as f:
-            content = f.read()
-            logger.info(f"Read {len(content)} characters.")
-            if not content.strip():
-                return {"content": "", "validation_errors": ["File is empty"]}
-            return {"content": content}
+        parsed = parse_document(file_path)
+        logger.info(
+            f"Successfully parsed {parsed.format} ({parsed.page_count} pages, {len(parsed.text)} characters)."
+        )
+
+        validation_errors = list(state.get("validation_errors", []))
+        if parsed.is_scanned_or_empty:
+            error_msg = (
+                "File is empty or contains no extractable text. Scanned PDFs/images and OCR are unsupported."
+            )
+            logger.warning(error_msg)
+            validation_errors.append(error_msg)
+
+        return {
+            "content": parsed.text,
+            "page_count": parsed.page_count,
+            "format": parsed.format,
+            "validation_errors": validation_errors,
+        }
+    except (DocumentParsingError, UnsupportedFileTypeError) as e:
+        logger.error(f"Parsing error for {file_path}: {e}")
+        return {
+            "content": "",
+            "page_count": 0,
+            "format": "unknown",
+            "validation_errors": [f"Parsing error: {str(e)}"],
+        }
     except Exception as e:
-        logger.error(f"Error reading file {file_path}: {e}")
-        return {"content": "", "validation_errors": [f"Error reading file: {str(e)}"]}
+        logger.error(f"Unexpected error ingesting {file_path}: {e}")
+        return {
+            "content": "",
+            "page_count": 0,
+            "format": "unknown",
+            "validation_errors": [f"Unexpected ingestion error: {str(e)}"],
+        }
 
 
 def classify_node(state: dict) -> dict:
     """Classifies document content using LLM agent."""
     content = state.get("content", "")
-    if not content:
-        logger.warning("Empty content; skipping LLM classification.")
+    if not content or len(content.strip()) < 5:
+        logger.warning("Empty or insufficient content; assigning Unknown classification.")
         return {
             "classification": "Unknown",
             "confidence_score": 0.0,
         }
 
-    logger.info("--- CLASSIFYING ---")
+    logger.info("Classifying document content...")
     result = run_classification_crew(content)
     logger.info(f"Classification result: {result}")
 
@@ -64,10 +99,10 @@ def route_document(state: dict) -> str:
     confidence = state.get("confidence_score", 0.0)
     threshold = settings.CONFIDENCE_THRESHOLD
 
-    logger.info(f"-> ROUTING: Type={classification}, Confidence={confidence}, Threshold={threshold}")
+    logger.info(f"Routing check: Type={classification}, Confidence={confidence}, Threshold={threshold}")
 
     if confidence < threshold:
-        logger.warning(f"--- LOW CONFIDENCE ({confidence} < {threshold}) -> MANUAL REVIEW ---")
+        logger.warning(f"Low confidence ({confidence} < {threshold}) -> routing to manual review.")
         return "manual_review"
 
     return "extract"
@@ -77,7 +112,7 @@ def extract_node(state: dict) -> dict:
     """Extracts structured key-value data using the specialized extractor agent."""
     classification = state.get("classification") or "Document"
     content = state.get("content", "")
-    logger.info(f"--- EXTRACTING ({classification}) ---")
+    logger.info(f"Extracting fields for {classification}...")
     data = run_extraction_crew(content, classification)
     if not isinstance(data, dict):
         data = {}
@@ -103,7 +138,7 @@ def validate_node(state: dict) -> dict:
     Deterministic rule-based validation of extracted data.
     Validates arithmetic consistency for invoices (subtotal + tax == total).
     """
-    logger.info("--- VALIDATING DATA ---")
+    logger.info("Validating extracted data...")
     data = state.get("extracted_data", {})
     classification = state.get("classification")
     validation_errors = list(state.get("validation_errors", []))
@@ -123,14 +158,14 @@ def validate_node(state: dict) -> dict:
             calculated_total = subtotal + tax
             if abs(calculated_total - total) > 0.01:
                 error_msg = f"Math Mismatch: Subtotal ({subtotal}) + Tax ({tax}) != Total ({total})"
-                logger.error(f"❌ {error_msg}")
+                logger.error(f"[ERROR] {error_msg}")
                 validation_errors.append(error_msg)
             else:
-                logger.info("✅ Math Validation Passed")
+                logger.info("[OK] Math Validation Passed")
 
         except ValueError as e:
             error_msg = f"Invalid number format in extracted data: {str(e)}"
-            logger.error(error_msg)
+            logger.error(f"[ERROR] {error_msg}")
             validation_errors.append(error_msg)
 
     return {"validation_errors": validation_errors}
@@ -142,9 +177,9 @@ def manual_review_node(state: dict) -> dict:
     errors = state.get("validation_errors", [])
 
     if errors:
-        logger.warning(f"--- MANUAL REVIEW TRIGGERED: Validation Errors: {errors} ---")
+        logger.warning(f"Manual review triggered. Validation errors: {errors}")
     else:
-        logger.warning(f"--- MANUAL REVIEW TRIGGERED: Low Confidence ({confidence}) ---")
+        logger.warning(f"Manual review triggered. Low confidence ({confidence})")
 
     fallback_errors = errors if errors else [f"Confidence ({confidence}) below threshold ({settings.CONFIDENCE_THRESHOLD})"]
 

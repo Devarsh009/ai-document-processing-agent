@@ -1,4 +1,4 @@
-from typing import Optional
+from typing import List, Optional
 from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
@@ -29,11 +29,27 @@ class Settings(BaseSettings):
     )
     UPLOAD_DIR: str = Field(
         default="uploads",
-        description="Directory to temporarily store uploaded files for worker processing",
+        description="Directory to store uploaded files for worker processing",
+    )
+    DATABASE_PATH: str = Field(
+        default="jobs.db",
+        description="Path to SQLite persistent database for job lifecycle tracking",
     )
     CONFIDENCE_THRESHOLD: float = Field(
         default=0.70,
         description="Confidence threshold below which documents route to manual review",
+    )
+    MAX_UPLOAD_SIZE_BYTES: int = Field(
+        default=10 * 1024 * 1024,  # 10 MB
+        description="Maximum allowed upload size in bytes",
+    )
+    ALLOWED_EXTENSIONS: List[str] = Field(
+        default=[".txt", ".pdf", ".docx"],
+        description="Supported file extensions for document ingestion",
+    )
+    REQUEST_TIMEOUT_SECONDS: float = Field(
+        default=30.0,
+        description="Timeout in seconds for external provider calls",
     )
 
     @field_validator("REDIS_URL")
